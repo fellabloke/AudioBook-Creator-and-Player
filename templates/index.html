@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PDF Audio Streamer - Setup</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background-color: #f0f2f5; color: #333; }
+        .container { background-color: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 600px; margin: 40px auto; }
+        h1 { color: #0056b3; text-align: center; margin-bottom: 25px; }
+        label { display: block; margin-bottom: 8px; font-weight: 600; color: #555; }
+        input[type="file"], input[type="submit"] { margin-bottom: 20px; width: 100%; padding: 12px; box-sizing: border-box; border-radius: 6px; border: 1px solid #ccc; }
+        input[type="file"] { background-color: #f8f9fa; }
+        input[type="submit"] { background-color: #007bff; color: white; font-size: 16px; font-weight: bold; border: none; cursor: pointer; transition: background-color 0.2s ease-in-out; }
+        input[type="submit"]:hover { background-color: #0056b3; }
+        input[type="submit"]:disabled { background-color: #cccccc; cursor: not-allowed; }
+        #status-container { margin-top: 20px; padding: 12px; border-radius: 6px; text-align: center; min-height: 20px; } /* Added min-height */
+        .status-message { font-weight: 500; }
+        .error { background-color: #ffebee; border: 1px solid #ffcdd2; color: #c62828; }
+        .success { background-color: #e8f5e9; border: 1px solid #c8e6c9; color: #2e7d32; }
+        #loading-indicator { display: none; text-align: center; margin-top: 10px; }
+        #loading-indicator img { width: 30px; height: 30px; vertical-align: middle; margin-right: 8px;}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Upload PDF & Voice Sample</h1>
+        {% if not tts_enabled %}
+            <div id="status-container" class="status-message error">
+                TTS Model not loaded. Speech synthesis is disabled.
+            </div>
+        {% endif %}
+
+        <form id="uploadForm">
+            <div>
+                <label for="pdf_file">PDF Document:</label>
+                <input type="file" id="pdf_file" name="pdf_file" accept=".pdf" required>
+            </div>
+            <div>
+                <label for="voice_sample">Voice Sample (WAV/MP3):</label>
+                <input type="file" id="voice_sample" name="voice_sample" accept=".wav,.mp3" required>
+            </div>
+            <input type="submit" value="Process PDF for Reading" {% if not tts_enabled %}disabled{% endif %}>
+        </form>
+        <div id="loading-indicator">
+            <img src="{{ url_for('serve_general_static', filename='ZZ5H.gif') }}" alt="Loading..." /> 
+            Processing PDF, please wait... This might take a moment.
+        </div>
+        <div id="status-container" class="status-message"></div>
+    </div>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const statusContainer = document.getElementById('status-container');
+            const loadingIndicator = document.getElementById('loading-indicator');
+            const submitButton = this.querySelector('input[type="submit"]');
+            
+            statusContainer.textContent = '';
+            statusContainer.className = 'status-message'; 
+            loadingIndicator.style.display = 'block';
+            submitButton.disabled = true;
+
+            const formData = new FormData(this);
+
+            try {
+                const response = await fetch("{{ url_for('initiate_processing_session') }}", {
+                    method: 'POST',
+                    body: formData,
+                });
+                
+                const result = await response.json();
+
+                if (response.ok && result.success) {
+                    statusContainer.className = 'status-message success';
+                    statusContainer.textContent = `PDF processed! Session: ${result.session_id}. Chunks: ${result.num_chunks}. Redirecting to player...`;
+                    
+                    // Store MINIMAL session details for the player page
+                    // chunk_previews are NO LONGER stored here to avoid quota issues
+                    sessionStorage.setItem(`session_data_${result.session_id}`, JSON.stringify({
+                        session_id: result.session_id,
+                        num_chunks: result.num_chunks,
+                        original_filename: result.original_filename,
+                        main_content_start_index: result.main_content_start_index
+                        // chunk_previews is removed
+                    }));
+
+                    window.location.href = "{{ url_for('player_page') }}?session_id=" + result.session_id;
+                } else {
+                    statusContainer.className = 'status-message error';
+                    statusContainer.textContent = 'Error: ' + (result.error || response.statusText || 'Unknown error processing PDF.');
+                }
+            } catch (error) {
+                statusContainer.className = 'status-message error';
+                statusContainer.textContent = 'Network or client-side error: ' + error.message;
+            } finally {
+                loadingIndicator.style.display = 'none';
+                const ttsIsEnabled = {{ 'true' if tts_enabled else 'false' }};
+                if (ttsIsEnabled) {
+                     submitButton.disabled = false;
+                }
+            }
+        });
+    </script>
+</body>
+</html>

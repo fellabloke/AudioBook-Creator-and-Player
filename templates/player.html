@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PDF Audio Player</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f0f2f5; color: #333; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+        #player-wrapper { display: flex; flex-direction: column; gap: 20px; width: 100%; max-width: 900px; }
+        #content-row { display: flex; gap: 20px; width: 100%; }
+        #main-player-content { flex: 3; background: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        #sidebar-chunks { flex: 1; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: calc(80vh - 50px); overflow-y: auto; }
+        #document-title-header { width:100%; text-align:center; margin-bottom:20px; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        h1, h2 { color: #0056b3; margin-top: 0; }
+        h1 { font-size: 1.8em; margin-bottom: 0px; }
+        h2 { font-size: 1.3em; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px;}
+        #pdf-title-display { font-weight: normal; color: #555; }
+        #current-text { min-height: 150px; border: 1px solid #e0e0e0; padding: 15px; margin-bottom: 20px; background-color: #f8f9fa; border-radius: 6px; overflow-y: auto; max-height: 300px; line-height: 1.6; white-space: pre-wrap; }
+        audio { width: 100%; margin-bottom: 15px; }
+        #controls button, .retry-button { padding: 10px 18px; margin-right: 10px; cursor: pointer; background-color: #007bff; color: white; border: none; border-radius: 5px; font-size: 0.95em; transition: background-color 0.2s; }
+        #controls button:hover, .retry-button:hover { background-color: #0056b3; }
+        #controls button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        .retry-button { background-color: #ffc107; color: #333; margin-left: auto; font-size: 0.8em; padding: 5px 10px; }
+        .retry-button:hover { background-color: #e0a800;}
+        #chunk-list { list-style-type: none; padding: 0; margin: 0; }
+        #chunk-list li { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-bottom: 1px solid #f0f0f0; cursor: pointer; transition: background-color 0.2s; font-size: 0.9em; color: #444; }
+        #chunk-list li:hover { background-color: #e9ecef; }
+        #chunk-list li.active { font-weight: bold; background-color: #d0e0ff; color: #0056b3; }
+        #chunk-list li.skippable .chunk-text-display { color: #777; font-style: italic; }
+        #chunk-list li.skippable:hover { background-color: #f5e4e4; }
+        #chunk-list li.error .chunk-text-display { text-decoration: line-through; color: #c62828; } 
+        #chunk-list li.error { background-color: #ffebee;} 
+        .chunk-text-display { flex-grow: 1; margin-right: 5px;} 
+        #loading-chunk-indicator { display: none; color: #007bff; font-weight: bold; margin-top: 10px; text-align: center; }
+        .status-bar { margin-bottom:15px; font-size:0.9em; color: #666; }
+        .error-notice { color: red; font-weight: bold; margin-top: 5px; min-height: 1.2em; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div id="player-wrapper">
+        <div id="document-title-header">
+             <h1>Now Reading: <span id="pdf-title-display">Loading PDF Title...</span></h1>
+        </div>
+        <div id="content-row">
+            <div id="main-player-content">
+                <div class="status-bar">
+                    Session ID: <span id="session-id-display">N/A</span> | 
+                    Chunk: <span id="current-chunk-display">0</span> / <span id="total-chunks-display">0</span> |
+                    Page: <span id="current-page-display">-</span>
+                </div>
+                
+                <audio id="audioPlayer" controls></audio>
+                <div id="chunk-error-notice" class="error-notice"></div>
+                
+                <h2>Current Text</h2>
+                <div id="current-text">Please select a chunk or press play...</div>
+
+                <div id="controls">
+                    <button id="playPauseBtn" disabled>Play</button>
+                    <button id="prevBtn" disabled>Previous</button>
+                    <button id="nextBtn" disabled>Next</button>
+                    <button id="skipToMainBtn" disabled>Skip to Main Content</button>
+                </div>
+                <div id="loading-chunk-indicator">
+                    <img src="{{ url_for('serve_general_static', filename='ZZ5H.gif') }}" alt="Loading..." style="width:20px; vertical-align:middle;" /> 
+                    Loading audio chunk...
+                </div>
+            </div>
+
+            <div id="sidebar-chunks">
+                <h2>Document Chunks</h2>
+                <ul id="chunk-list"><li>Loading chunk list...</li></ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const audioPlayer = document.getElementById('audioPlayer');
+        const currentTextDiv = document.getElementById('current-text');
+        const playPauseBtn = document.getElementById('playPauseBtn');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+        const skipToMainBtn = document.getElementById('skipToMainBtn');
+        const currentChunkDisplay = document.getElementById('current-chunk-display');
+        const totalChunksDisplay = document.getElementById('total-chunks-display');
+        const currentPageDisplay = document.getElementById('current-page-display');
+        const pdfTitleDisplay = document.getElementById('pdf-title-display');
+        const sessionIdDisplay = document.getElementById('session-id-display');
+        const chunkListUl = document.getElementById('chunk-list');
+        const loadingChunkIndicator = document.getElementById('loading-chunk-indicator');
+        const chunkErrorNotice = document.getElementById('chunk-error-notice');
+
+        let currentSessionId = null;
+        let currentChunkIndex = 0;
+        let totalChunks = 0;
+        let clientChunkMetadata = []; 
+        let mainContentStartIndex = 0;
+        let isPlaying = false;
+        let isLoadingChunk = false; 
+        let chunkAudioCache = new Map(); 
+        const PREFETCH_AHEAD = 1; // Temporarily 1 for easier debugging
+        let autoPlayNextEnabled = true; 
+        let userInteracted = false; 
+
+        function updateUserInteraction() {
+            if (!userInteracted) {
+                userInteracted = true;
+                console.log("User interaction detected. Autoplay for subsequent chunks should now be more reliable.");
+            }
+        }
+
+        function updateButtonStates() {
+            const canControl = totalChunks > 0 && !isLoadingChunk;
+            playPauseBtn.disabled = !canControl;
+            prevBtn.disabled = !canControl || currentChunkIndex <= 0;
+            nextBtn.disabled = !canControl || currentChunkIndex >= totalChunks - 1;
+            skipToMainBtn.disabled = !canControl || totalChunks === 0 || mainContentStartIndex >= totalChunks || currentChunkIndex === mainContentStartIndex;
+            playPauseBtn.textContent = isPlaying ? 'Pause' : 'Play';
+        }
+
+        function updatePlayPauseButton(playing) {
+            isPlaying = playing;
+            playPauseBtn.textContent = isPlaying ? 'Pause' : 'Play';
+        }
+
+        function updateChunkUIDisplay() {
+            currentChunkDisplay.textContent = totalChunks > 0 ? currentChunkIndex + 1 : 0;
+            totalChunksDisplay.textContent = totalChunks;
+            const currentChunkMetaFromClient = clientChunkMetadata[currentChunkIndex];
+            currentPageDisplay.textContent = currentChunkMetaFromClient && currentChunkMetaFromClient.page !== -1 ? currentChunkMetaFromClient.page : '-';
+            if (totalChunks > 0) {
+                const cachedFullText = chunkAudioCache.get(currentChunkIndex)?.text_from_server;
+                if (cachedFullText) {
+                    currentTextDiv.textContent = cachedFullText;
+                } else if (currentChunkMetaFromClient) {
+                    currentTextDiv.textContent = currentChunkMetaFromClient.text_snippet + " (Full text loads on play/selection)";
+                } else {
+                    currentTextDiv.textContent = "Loading chunk text...";
+                }
+            } else {
+                currentTextDiv.textContent = "No chunks to display.";
+            }
+        }
+        
+        function highlightActiveChunkInList() {
+            const items = chunkListUl.getElementsByTagName('li');
+            for (let i = 0; i < items.length; i++) {
+                items[i].classList.remove('active', 'error');
+                const itemChunkIndex = parseInt(items[i].dataset.chunkIndex);
+                if (itemChunkIndex === currentChunkIndex) {
+                    items[i].classList.add('active');
+                }
+                const cachedChunk = chunkAudioCache.get(itemChunkIndex);
+                let retryBtn = items[i].querySelector('.retry-button');
+
+                // Update for 'busy' or 'synthesizing' status too
+                if (cachedChunk && (cachedChunk.status === 'error' || cachedChunk.status === 'busy' || cachedChunk.status === 'synthesizing')) {
+                    if (cachedChunk.status === 'error') items[i].classList.add('error');
+                    
+                    if (cachedChunk.status === 'error' && !retryBtn) { 
+                         retryBtn = createRetryButton(itemChunkIndex);
+                         items[i].appendChild(retryBtn);
+                    } else if (cachedChunk.status !== 'error' && retryBtn) {
+                        retryBtn.remove(); // Remove retry if not an error
+                    }
+                } else { 
+                    if (retryBtn) retryBtn.remove();
+                }
+            }
+        }
+
+        async function fetchAndCacheChunk(sessionId, chunkIndex, isPrefetch = false) {
+            console.log(`fetchAndCacheChunk called for S:${sessionId} C:${chunkIndex}, isPrefetch: ${isPrefetch}`);
+            if (chunkIndex < 0 || chunkIndex >= totalChunks) return null;
+            
+            let cached = chunkAudioCache.get(chunkIndex);
+            if (cached && cached.status === 'ready' && cached.url) {
+                if (!isPrefetch) console.log(`S:${sessionId} C:${chunkIndex} from cache (ready).`);
+                return cached;
+            }
+            // If 'fetching' and it's a foreground request, wait a bit. If prefetch, skip.
+            if (cached && cached.status === 'fetching') {
+                if (!isPrefetch) { 
+                    console.log(`S:${sessionId} C:${chunkIndex} already fetching by another call. Waiting a moment...`);
+                    if(!isLoadingChunk) loadingChunkIndicator.style.display = 'block';
+                    // Brief wait; if it's still fetching after this, the server is likely taking time.
+                    await new Promise(resolve => setTimeout(resolve, 1500)); 
+                    if(!isLoadingChunk && !isPrefetch) loadingChunkIndicator.style.display = 'none';
+                    cached = chunkAudioCache.get(chunkIndex); // Re-check cache
+                    console.log(`S:${sessionId} C:${chunkIndex} finished brief wait. New status: ${cached?.status}`);
+                    // If it became ready, return it. Otherwise, the calling function will handle it (e.g. show busy message).
+                    return (cached && cached.status === 'ready') ? cached : null; 
+                } else { 
+                    console.log(`S:${sessionId} C:${chunkIndex} prefetch found 'fetching' status, skipping prefetch for this one.`);
+                    return null; 
+                }
+            }
+            
+            if (cached && cached.status === 'error' && !isPrefetch && !(cached.isRetryingNow === true)) {
+                console.warn(`S:${sessionId} C:${chunkIndex} - Not auto-fetching errored chunk. User must retry.`);
+                const errorTextPlaceholder = clientChunkMetadata[chunkIndex]?.text_snippet || `Chunk ${chunkIndex+1} previously failed.`;
+                if (currentChunkIndex === chunkIndex) { // Only update main display if it's the current chunk
+                    currentTextDiv.textContent = errorTextPlaceholder;
+                    chunkErrorNotice.textContent = `Error: ${cached.details || 'Synthesis failed previously for this chunk.'}`;
+                }
+                highlightActiveChunkInList(); 
+                return null;
+            }
+
+            // If status is 'busy' or 'synthesizing' from a previous attempt, and this is a foreground request,
+            // don't immediately re-fetch. Let UI reflect this.
+            if (cached && (cached.status === 'busy' || cached.status === 'synthesizing') && !isPrefetch) {
+                console.log(`S:${sessionId} C:${chunkIndex} - Cached status is '${cached.status}'. Not re-fetching immediately.`);
+                if (currentChunkIndex === chunkIndex) {
+                    currentTextDiv.textContent = `Chunk ${chunkIndex+1} is still ${cached.details || cached.status}. Please wait or try again.`;
+                }
+                highlightActiveChunkInList();
+                return null;
+            }
+
+
+            if (!isPrefetch) {
+                loadingChunkIndicator.style.display = 'block';
+                isLoadingChunk = true; 
+                updateButtonStates();
+                chunkErrorNotice.textContent = ''; 
+            }
+            
+            const textForCacheOnError = clientChunkMetadata[chunkIndex]?.text_snippet || `Text for chunk ${chunkIndex+1} not available.`;
+            // Set to 'fetching' to prevent multiple concurrent fetches for the same chunk
+            chunkAudioCache.set(chunkIndex, { status: 'fetching', url: null, text_from_server: textForCacheOnError, details: 'Fetching from server...' });
+            console.log(`S:${sessionId} C:${chunkIndex} - Fetching from server (isPrefetch: ${isPrefetch}).`);
+            highlightActiveChunkInList(); // Reflect 'fetching' state (though visually subtle)
+
+            try {
+                const response = await fetch(`/get_audio_chunk/${sessionId}/${chunkIndex}`);
+                const result = await response.json();
+                console.log(`S:${sessionId} C:${chunkIndex} - Server response:`, result);
+
+                if (!isPrefetch) { // Only stop loading indicator for foreground.
+                    loadingChunkIndicator.style.display = 'none';
+                    isLoadingChunk = false;
+                }
+
+                if (response.ok && result.success) { // Status 200 and success: true
+                    console.log(`S:${sessionId} C:${chunkIndex} - Received OK: ${result.audio_url}`);
+                    const chunkData = { url: result.audio_url, text_from_server: result.text_chunk, status: 'ready', details: "Successfully synthesized" };
+                    chunkAudioCache.set(chunkIndex, chunkData);
+                    if (!isPrefetch && currentChunkIndex === chunkIndex) { // If it's the current chunk being fetched
+                        currentTextDiv.textContent = result.text_chunk; // Update main display
+                    }
+                } else if (result.status === 'synthesizing' || result.status === 'busy') { // Status 202 or 429
+                    console.log(`S:${sessionId} C:${chunkIndex} - Server status '${result.status}'. Client will reflect this.`);
+                    // Update cache to reflect server's current state.
+                    chunkAudioCache.set(chunkIndex, { status: result.status, url: null, text_from_server: textForCacheOnError, details: result.message });
+                    if (!isPrefetch && currentChunkIndex === chunkIndex) {
+                         currentTextDiv.textContent = `Chunk ${chunkIndex+1} is ${result.message}. Please wait.`;
+                    }
+                } else { // Other errors (e.g., 500, or 200 but result.success is false)
+                    const errorText = result.error || 'Unknown server error';
+                    const errorDetails = result.details || 'No details provided by server.';
+                    console.error(`S:${sessionId} C:${chunkIndex} - Failed to get chunk:`, errorText, errorDetails);
+                    chunkAudioCache.set(chunkIndex, { status: 'error', url: null, text_from_server: textForCacheOnError, details: `${errorText} - ${errorDetails}` });
+                    if (!isPrefetch && currentChunkIndex === chunkIndex) {
+                        currentTextDiv.textContent = clientChunkMetadata[chunkIndex]?.text_snippet || `Error loading chunk ${chunkIndex+1}.`;
+                        chunkErrorNotice.textContent = `Error [Chunk ${chunkIndex+1}]: ${errorText}. Details: ${errorDetails}`;
+                        updatePlayPauseButton(false); 
+                    }
+                }
+            } catch (error) { 
+                console.error(`S:${sessionId} C:${chunkIndex} - Network error fetching chunk:`, error);
+                const netErrorDetails = `Network Error: ${error.message}`;
+                chunkAudioCache.set(chunkIndex, { status: 'error', url: null, text_from_server: textForCacheOnError, details: netErrorDetails });
+                if (!isPrefetch) { // Only update UI for foreground.
+                    loadingChunkIndicator.style.display = 'none';
+                    isLoadingChunk = false;
+                    if (currentChunkIndex === chunkIndex){
+                        currentTextDiv.textContent = clientChunkMetadata[chunkIndex]?.text_snippet || `Network error loading chunk ${chunkIndex+1}.`;
+                        chunkErrorNotice.textContent = `Network error for chunk ${chunkIndex+1}: ${error.message}`;
+                        updatePlayPauseButton(false);
+                    }
+                }
+            } finally {
+                if (!isPrefetch) updateButtonStates(); // Always update button states after foreground fetch attempt
+                highlightActiveChunkInList(); // Reflect final status in list
+                const finalCachedState = chunkAudioCache.get(chunkIndex);
+                if(finalCachedState?.isRetryingNow) { 
+                   delete finalCachedState.isRetryingNow;
+                }
+                // If the status is still 'fetching' after all this (e.g. due to a prefetch skip),
+                // it might need to be reset or handled by a timeout if it persists too long.
+                // For now, subsequent calls will re-evaluate.
+                return chunkAudioCache.get(chunkIndex); // Return the final state of the cached chunk
+            }
+        }
+
+        async function loadAndPlayChunk(index, playWhenReady = true) {
+            console.log(`loadAndPlayChunk called for C:${index}, playWhenReady: ${playWhenReady}, userInteracted: ${userInteracted}, isLoadingChunk: ${isLoadingChunk}`);
+            if (isLoadingChunk && currentChunkIndex !== index && playWhenReady) { 
+                console.log("Primary chunk load in progress for another chunk, play request for C:" + index + " deferred.");
+                return;
+            }
+            if (index < 0 || index >= totalChunks) {
+                if (index >= totalChunks && totalChunks > 0) { 
+                    currentTextDiv.textContent = "End of document reached.";
+                    audioPlayer.pause(); 
+                    updatePlayPauseButton(false);
+                    autoPlayNextEnabled = false;
+                } else if (totalChunks === 0) { currentTextDiv.textContent = "No chunks to play."; }
+                updateButtonStates(); return;
+            }
+            
+            currentChunkIndex = index;
+            updateChunkUIDisplay(); 
+            highlightActiveChunkInList();
+            chunkErrorNotice.textContent = ''; 
+
+            if (playWhenReady) autoPlayNextEnabled = true;
+
+            const chunkData = await fetchAndCacheChunk(currentSessionId, index, false); 
+            console.log(`C:${index} - fetchAndCacheChunk returned:`, chunkData);
+            
+            if (chunkData && chunkData.status === 'ready' && chunkData.url) {
+                currentTextDiv.textContent = chunkData.text_from_server;
+                audioPlayer.src = chunkData.url;
+
+                if (playWhenReady) {
+                    if (userInteracted) {
+                        try { 
+                            console.log(`C:${index} - Attempting to play (user interacted).`);
+                            await audioPlayer.play(); 
+                        } catch (e) {
+                            console.error(`C:${index} - Play error (after user interaction):`, e);
+                            updatePlayPauseButton(false); 
+                            chunkErrorNotice.textContent = "Playback initiation failed. Browser might block, or audio invalid.";
+                            autoPlayNextEnabled = false;
+                        }
+                    } else {
+                        console.log(`C:${index} - Playback deferred until user interaction (playWhenReady was true but no interaction yet).`);
+                        updatePlayPauseButton(false); 
+                    }
+                } else { 
+                     updatePlayPauseButton(false); 
+                }
+                if(chunkData.status === 'ready') prefetchNextAvailableChunks(index + 1);
+            } else { 
+                console.log(`C:${index} - No valid chunkData or URL after fetch (status: ${chunkData?.status}). Cannot play.`);
+                updatePlayPauseButton(false); 
+                // If the chunk is busy/synthesizing, don't disable autoplay, it might become available.
+                if (chunkData?.status === 'error' && playWhenReady) {
+                    autoPlayNextEnabled = false; // Stop autoplay if intended play chunk is error
+                }
+            }
+            updateButtonStates();
+        }
+        
+        async function prefetchNextAvailableChunks(startIndex) {
+            console.log(`Prefetch check starting from index ${startIndex}`);
+            for (let i = 0; i < PREFETCH_AHEAD; i++) {
+                const targetIndex = startIndex + i;
+                if (targetIndex >= totalChunks) break; 
+                let cached = chunkAudioCache.get(targetIndex);
+                if (!cached || (cached.status !== 'ready' && cached.status !== 'fetching' && cached.status !== 'error' && cached.status !== 'busy' && cached.status !== 'synthesizing')) {
+                    console.log(`Prefetch triggered for C:${targetIndex}`);
+                    await fetchAndCacheChunk(currentSessionId, targetIndex, true); 
+                } else {
+                    console.log(`No prefetch for C:${targetIndex}, status: ${cached?.status}`);
+                }
+            }
+        }
+        
+        playPauseBtn.addEventListener('click', () => {
+            updateUserInteraction();
+            if (totalChunks === 0 || isLoadingChunk) return;
+
+            const cachedChunkState = chunkAudioCache.get(currentChunkIndex);
+            const isPlayable = audioPlayer.src && audioPlayer.src !== window.location.href && !audioPlayer.error && cachedChunkState?.status === 'ready';
+
+            if (isPlayable) {
+                if (isPlaying) { 
+                    audioPlayer.pause(); 
+                    autoPlayNextEnabled = false; 
+                } else { 
+                    audioPlayer.play().then(() => {
+                        autoPlayNextEnabled = true; 
+                    }).catch(e => {
+                        console.error("Play error on button click (isPlayable):", e);
+                        chunkErrorNotice.textContent = "Playback failed.";
+                        autoPlayNextEnabled = false;
+                    });
+                }
+            } else { 
+                console.log(`Play button: Chunk ${currentChunkIndex} not immediately playable (Status: ${cachedChunkState?.status}, Src: ${audioPlayer.src}). Attempting loadAndPlayChunk.`);
+                autoPlayNextEnabled = true; 
+                loadAndPlayChunk(currentChunkIndex, true); 
+            }
+        });
+
+        audioPlayer.onplay = () => { 
+            updateUserInteraction(); 
+            updatePlayPauseButton(true); 
+        };
+        audioPlayer.onpause = () => {
+            // Only set isPlaying to false. Don't change autoPlayNextEnabled here,
+            // as pauses can be due to errors, end of audio, or user action.
+            // User action on button should control autoPlayNextEnabled for pauses.
+            updatePlayPauseButton(false);
+        };
+        audioPlayer.onended = () => {
+            console.log(`C:${currentChunkIndex} ended. autoPlayNextEnabled: ${autoPlayNextEnabled}`);
+            updatePlayPauseButton(false); 
+            if (autoPlayNextEnabled && currentChunkIndex < totalChunks - 1) {
+                console.log(`Autoplaying next chunk: ${currentChunkIndex + 1}`);
+                loadAndPlayChunk(currentChunkIndex + 1, true); 
+            } else if (currentChunkIndex >= totalChunks - 1) {
+                currentTextDiv.textContent = "End of document.";
+                autoPlayNextEnabled = false; 
+            }
+            updateButtonStates();
+        };
+        audioPlayer.onerror = (e) => {
+            const error = audioPlayer.error; console.error(`Audio player error on C:${currentChunkIndex}:`, error);
+            const errorMsg = error ? ` (Code: ${error.code}, Message: ${error.message})` : '';
+            const errorTextDisplayBase = clientChunkMetadata[currentChunkIndex]?.text_snippet || `Error playing audio for chunk ${currentChunkIndex + 1}`;
+            const fullErrorText = `${errorTextDisplayBase}${errorMsg}. Audio might be corrupted or format not supported.`;
+            
+            currentTextDiv.textContent = fullErrorText;
+            chunkErrorNotice.textContent = `Playback Error: ${errorMsg || 'Unknown audio error.'}`;
+            
+            const currentChunkTextForCache = clientChunkMetadata[currentChunkIndex]?.text_snippet || `Chunk ${currentChunkIndex + 1} text`;
+            chunkAudioCache.set(currentChunkIndex, {status: 'error', url:null, text_from_server: currentChunkTextForCache, details: `Playback Error: ${errorMsg}`});
+            
+            highlightActiveChunkInList(); 
+            updatePlayPauseButton(false); 
+            updateButtonStates();
+            autoPlayNextEnabled = false; 
+        };
+
+        nextBtn.addEventListener('click', () => {
+            updateUserInteraction();
+            if (currentChunkIndex < totalChunks - 1) { 
+                autoPlayNextEnabled = true; 
+                loadAndPlayChunk(currentChunkIndex + 1, true); 
+            }
+        });
+        prevBtn.addEventListener('click', () => {
+            updateUserInteraction();
+            if (currentChunkIndex > 0) { 
+                autoPlayNextEnabled = true; 
+                loadAndPlayChunk(currentChunkIndex - 1, true); 
+            }
+        });
+        skipToMainBtn.addEventListener('click', () => {
+            updateUserInteraction();
+            if (mainContentStartIndex < totalChunks) { 
+                autoPlayNextEnabled = true; 
+                loadAndPlayChunk(mainContentStartIndex, true); 
+            }
+        });
+
+        async function handleRetryChunk(chunkIndexToRetry) {
+            updateUserInteraction();
+            if (isLoadingChunk && currentChunkIndex === chunkIndexToRetry) { return; }
+            console.log(`Manual retry requested for C:${chunkIndexToRetry}`);
+            chunkErrorNotice.textContent = `Retrying chunk ${chunkIndexToRetry + 1}...`;
+            
+            chunkAudioCache.set(chunkIndexToRetry, { 
+                status: 'pending', // Mark as pending to allow fetch
+                isRetryingNow: true, // Custom flag to indicate this is a retry action
+                text_from_server: clientChunkMetadata[chunkIndexToRetry]?.text_snippet || `Text for chunk ${chunkIndexToRetry+1}` 
+            }); 
+            highlightActiveChunkInList(); 
+
+            try {
+                const response = await fetch(`/retry_chunk_synthesis/${currentSessionId}/${chunkIndexToRetry}`, { method: 'POST' });
+                const result = await response.json();
+                if (response.ok && result.success) {
+                    console.log(`C:${chunkIndexToRetry} marked for retry on backend.`);
+                    autoPlayNextEnabled = true; 
+                    // Crucially, now call loadAndPlayChunk to actually fetch and potentially play it.
+                    loadAndPlayChunk(chunkIndexToRetry, chunkIndexToRetry === currentChunkIndex); 
+                } else {
+                    console.error("Failed to mark chunk for retry on backend:", result.error);
+                    chunkErrorNotice.textContent = `Failed to initiate retry: ${result.error || 'Server error'}`;
+                    chunkAudioCache.set(chunkIndexToRetry, {status: 'error', url:null, details: 'Retry initiation failed (server)', isRetryingNow: false});
+                    highlightActiveChunkInList();
+                }
+            } catch (e) {
+                console.error("Network error during retry request:", e);
+                chunkErrorNotice.textContent = `Network error on retry: ${e.message}`;
+                chunkAudioCache.set(chunkIndexToRetry, {status: 'error', url:null, details: 'Retry network error', isRetryingNow: false});
+                highlightActiveChunkInList();
+            }
+        }
+
+        function createRetryButton(chunkIndex) {
+            const button = document.createElement('button');
+            button.textContent = 'Retry';
+            button.className = 'retry-button';
+            button.style.marginLeft = 'auto'; 
+            button.onclick = (event) => {
+                event.stopPropagation(); handleRetryChunk(chunkIndex);
+            };
+            return button;
+        }
+        
+        function populateChunkListSidebar(metadata) { 
+            chunkListUl.innerHTML = ''; 
+            if (!metadata || metadata.length === 0) {
+                chunkListUl.innerHTML = '<li>No chunks to display.</li>'; return;
+            }
+            clientChunkMetadata = metadata; 
+            metadata.forEach(meta => { 
+                const li = document.createElement('li');
+                const textSpan = document.createElement('span');
+                textSpan.className = 'chunk-text-display';
+                let displayText = `Chunk ${meta.id + 1}`;
+                if (meta.page !== -1) { displayText += ` (Pg ${meta.page})`; }
+                displayText += `: ${meta.text_snippet}`; 
+                if (meta.is_skippable) { li.classList.add('skippable'); }
+                textSpan.textContent = displayText;
+                li.appendChild(textSpan);
+                li.dataset.chunkIndex = meta.id;
+                li.addEventListener('click', () => {
+                    if (!isLoadingChunk || currentChunkIndex === meta.id) {  
+                        updateUserInteraction();
+                        autoPlayNextEnabled = true; 
+                        loadAndPlayChunk(meta.id, true);
+                    } else { console.log("Cannot jump: a different primary chunk is currently loading.") }
+                });
+                chunkListUl.appendChild(li);
+            });
+            updateChunkUIDisplay(); 
+            highlightActiveChunkInList(); 
+        }
+
+        async function fetchChunkMetadataForSidebar(sessionId) {
+            try {
+                const response = await fetch(`/get_chunk_metadata/${sessionId}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const result = await response.json();
+                if (result.success && result.chunk_previews) {
+                    populateChunkListSidebar(result.chunk_previews);
+                } else {
+                    console.error("Failed to fetch chunk metadata:", result.error);
+                    chunkListUl.innerHTML = '<li>Error loading chunk list.</li>';
+                }
+            } catch (error) {
+                console.error("Error fetching chunk metadata for sidebar:", error);
+                chunkListUl.innerHTML = '<li>Could not load chunk list.</li>';
+            }
+        }
+
+        async function initializePlayer(sessionId) {
+            currentSessionId = sessionId; 
+            sessionIdDisplay.textContent = sessionId;
+            chunkAudioCache.clear(); 
+            const storedSessionDataString = sessionStorage.getItem(`session_data_${sessionId}`);
+            if (storedSessionDataString) {
+                const storedSessionData = JSON.parse(storedSessionDataString);
+                pdfTitleDisplay.textContent = storedSessionData.original_filename || "PDF Document";
+                totalChunks = storedSessionData.num_chunks || 0;
+                mainContentStartIndex = storedSessionData.main_content_start_index || 0;
+                await fetchChunkMetadataForSidebar(sessionId); 
+                updateChunkUIDisplay(); 
+                updateButtonStates();
+                if (totalChunks > 0) {
+                    currentChunkIndex = mainContentStartIndex > 0 && mainContentStartIndex < totalChunks ? mainContentStartIndex : 0; 
+                    console.log(`Initial chunk index set to: ${currentChunkIndex}`);
+                    await loadAndPlayChunk(currentChunkIndex, false); // Load first chunk, don't autoplay yet
+                    if (!userInteracted) { // Prompt for interaction
+                         chunkErrorNotice.textContent = "Click Play or interact with the page to start audio.";
+                    }
+                } else { 
+                    currentTextDiv.textContent = "No text chunks found for this session."; 
+                }
+            } else {
+                 pdfTitleDisplay.textContent = 'Error';
+                 currentTextDiv.textContent = "Session data not found. Please return to the setup page and re-process the PDF.";
+                 document.getElementById('controls').style.display = 'none';
+                 chunkListUl.innerHTML = '<li>Session data missing.</li>';
+            }
+            const interactionEvents = ['click', 'keydown', 'touchstart'];
+            const onFirstInteraction = () => {
+                updateUserInteraction(); 
+            };
+            interactionEvents.forEach(event => document.body.addEventListener(event, onFirstInteraction, { once: true, capture: true }));
+        }
+        
+        const urlParams = new URLSearchParams(window.location.search);
+        const sessionIdFromUrl = urlParams.get('session_id');
+        if (sessionIdFromUrl) { 
+            initializePlayer(sessionIdFromUrl); 
+        } else { 
+            pdfTitleDisplay.textContent = 'Error';
+            currentTextDiv.textContent = "No Session ID provided. Please start from the upload page.";
+            document.getElementById('controls').style.display = 'none';
+            chunkListUl.innerHTML = '<li>No session ID.</li>';
+        }
+    </script>
+</body>
+</html>

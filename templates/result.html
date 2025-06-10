@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Speech Ready!</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f9; color: #333; }
+        .container { background-color: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 600px; margin: 30px auto; text-align: center; }
+        h1 { color: #0056b3; margin-bottom: 20px; }
+        audio { width: 100%; margin-top: 20px; }
+        .text-snippet {
+            background-color: #e9ecef; padding: 15px; border-radius: 5px; text-align: left;
+            max-height: 150px; overflow-y: auto; margin-top: 20px; font-size: 0.9em;
+            border: 1px solid #ced4da;
+        }
+        a.button {
+            display: inline-block; background-color: #007bff; color: white; padding: 12px 20px;
+            text-decoration: none; border-radius: 5px; margin-top: 25px; font-size: 16px;
+        }
+        a.button:hover { background-color: #0056b3; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Generated Speech</h1>
+        
+        {% if audio_url %}
+            <p>Your PDF has been converted to speech. Listen below:</p>
+            <audio controls>
+                <source src="{{ audio_url }}" type="audio/wav">
+                Your browser does not support the audio element. You can <a href="{{ audio_url }}">download the audio file</a>.
+            </audio>
+            <div class="text-snippet">
+                <strong>Text Snippet Processed:</strong><br>
+                {{ text_snippet }}
+            </div>
+        {% else %}
+            <p>Sorry, there was an error generating the speech.</p>
+        {% endif %}
+        
+        <a href="{{ url_for('index') }}" class="button">Process Another PDF</a>
+    </div>
+</body>
+</html>
