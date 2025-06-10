@@ -1,0 +1,8 @@
+Flask
+PyMuPDF
+TTS==0.22.0
+librosa
+soundfile
+gunicorn
+transformers~=4.36.0
+nltk
